@@ -17,9 +17,12 @@ import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
+import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.TreeSet;
 import java.util.stream.Collectors;
 
@@ -32,7 +35,8 @@ import java.util.stream.Collectors;
  */
 public class ASN1Parser implements ASN1Configuration{
 
-    private Map<String, List<String>> mapColumns;     
+//    private Map<String, List<String>> mapColumns;     
+    private Set<String> setColumns;  
     private String recordType = null;
     private Path filePath;
     private String header;
@@ -46,6 +50,11 @@ public class ASN1Parser implements ASN1Configuration{
     private String asnDir;
     private String packageName;
     private Class outputRecordClass;
+    private List<Exception> exceptionList;
+    private static final int DEEP_LEVEL = 1;
+    private int deepLevelCount;
+    private String lastParentKey;
+    
     
     /**
      * Decodifica CDR y los convierte en archivos de texto independientes
@@ -56,7 +65,12 @@ public class ASN1Parser implements ASN1Configuration{
      */
     public void run(String dirFile) throws Exception{
         decodeFile(dirFile);
-        buildColumnsMap();
+        try {
+            buildColumnsMap();
+        } catch (Exception e) {
+            e.printStackTrace();
+            System.exit(0);
+        }
         buildChoices();
     }
     
@@ -81,6 +95,7 @@ public class ASN1Parser implements ASN1Configuration{
         genericList = new ArrayList();
         Object outputRecordInstance;
         List<PropertyDescriptor> filterProperties;
+        exceptionList = new LinkedList();
         Object choice;
 
         outputRecordClass = Class.forName(packageName + "." + outputRecord);
@@ -93,7 +108,8 @@ public class ASN1Parser implements ASN1Configuration{
                 choice = getChoice(filterProperties, outputRecordInstance);
                 genericList.add(choice);
             } catch (Exception ex) {
-                //System.out.println(ex.getMessage());
+//                ex.printStackTrace();
+                exceptionList.add(ex);
             }
         }
     }
@@ -165,9 +181,14 @@ public class ASN1Parser implements ASN1Configuration{
      * @throws IOException  si ocurre un error en la escritura de la cabecera del archivo.
      */
     private void buildHeader(String choice) throws IOException {
-        mapColumns.forEach((k, v) -> {
-            if( k.startsWith( choice.toLowerCase() ) ){            
-                appendColumn(k);
+//        mapColumns.forEach((k, v) -> {
+//            if( k.startsWith( choice.toLowerCase() ) ){            
+//                appendColumn(k);
+//            }
+//        });
+        setColumns.forEach(column -> {
+            if (column.startsWith(choice.toLowerCase())) {
+                appendColumn(column);
             }
         });
         header = header.substring(1) + "\n";
@@ -196,11 +217,14 @@ public class ASN1Parser implements ASN1Configuration{
      */
     private void buildRecords(String choice) throws Exception {
         header = "";
+        lastParentKey = "";
+        deepLevelCount = 0;
         buildHeader(choice);
         for (Object record : genericList) {
             if (record.getClass().getSimpleName().toLowerCase().equals(choice.toLowerCase())) {
                 initLines();
-                buildRecord(record, false);
+                recordType = choice.toLowerCase(); 
+                buildRecord(record, false, null, null);
                 writeRecord();
             }
         }
@@ -243,6 +267,11 @@ public class ASN1Parser implements ASN1Configuration{
         Files.write(filePath, fileLines);
     }
     
+    private void updateRecordType(String key){
+        recordType += "." + key.toLowerCase();
+        System.out.println( recordType );
+    }
+    
     /**
      * Lee objeto record con la información decodificada y guarda en la 
      * lista <code>lines</code> cada una de sus propiedades.
@@ -254,16 +283,26 @@ public class ASN1Parser implements ASN1Configuration{
      * @param isListElement indica si <code>record</code> es una Lista.
      * @throws Exception    si ocurrió un error en la construcción del record.
      */
-    private void buildRecord(Object record, boolean isListElement)throws Exception {
+    private void buildRecord(Object record, boolean isListElement, String parentKey, String childKey)throws Exception {
         Object object;
         String propName;
         Object innerObj;
-
+        
+        updateRecordType(parentKey, childKey);
+        
+        String auxKey = childKey == null ? parentKey : childKey;
+        if (isMaximumDeepLevel(auxKey)) {
+            return;
+        }
+        
         if (record instanceof NullObject) {
             if (isListElement) {
                 addAttribute(record);
+                removeLastParentKey();
             } else {
+//                updateRecordType(innerKey);
                 putLine(record);
+                removeLastParentKey();
             }
             return;
         }
@@ -272,36 +311,84 @@ public class ASN1Parser implements ASN1Configuration{
         if (filterProperties.isEmpty()) {
             if (isListElement) {
                 addAttribute(record);
+                removeLastParentKey();
             } else {
                 putLine(record);
+                removeLastParentKey();
             }
         } else {
             for (Field field : filterProperties) {
                 propName = field.getName();
                 field.setAccessible(true);
-                object = field.get(record) == null ? new NullObject(field.getType()) : field.get(record);
+                object = isNullObject(field, record) ? new NullObject(field.getType()) : field.get(record);
 
+//                System.out.println( propName );
+                if( propName.equalsIgnoreCase("group") ){
+                    System.out.println("");
+                }
+                
                 if (object instanceof List) {
                     subLines = new ArrayList<>();
                     List list = (List) object;
 
+                    if( list.isEmpty() ){
+                        System.out.println("");
+                    }
+                    
                     for (Object obj : list) {
                         innerAttributes = new ArrayList<>();
                         List<Field> attributes = filtrar(Arrays.asList(obj.getClass().getDeclaredFields()));
-
-                        for (Field innerField : attributes) {
-                            innerField.setAccessible(true);
-                            innerObj = innerField.get(obj) == null ? new NullObject(innerField.getType()) : innerField.get(obj);
-                            buildRecord(innerObj, true);
+                        
+                        if (attributes.isEmpty()) {
+                            addAttribute(obj);
+                            removeLastParentKey();
+                        } else {
+                            for (Field innerField : attributes) {
+                                innerField.setAccessible(true);
+                                innerObj = isNullObject(innerField, obj) ? new NullObject(innerField.getType()) : innerField.get(obj);
+                                buildRecord(innerObj, true, null, innerField.getName());
+                            }
                         }
+                        
                         StringBuilder strAttributes = new StringBuilder();
                         innerAttributes.forEach(strAttributes::append);
                         subLines.add(strAttributes.toString());
                     }
+//                    removeLastParentKey();
                     putListLines();
                 } else {
-                    buildRecord(object, false);
+                    buildRecord(object, false, propName, null);
                 }
+            }
+            removeLastParentKey();
+        }
+    }
+
+    private void updateRecordType(String parentKey, String childKey) {
+        String innerKey = "";
+        if (parentKey != null || childKey != null) {
+            if (parentKey != null && childKey != null) {
+                innerKey = parentKey + "." + childKey;
+            } else if (parentKey != null && childKey == null) {
+                innerKey = parentKey;
+            } else if (parentKey == null && childKey != null) {
+                innerKey = childKey;
+            }
+            updateRecordType(innerKey);
+        }
+    }
+    
+    private boolean isNullObject(Field field, Object record) throws IllegalArgumentException, IllegalAccessException{
+        Object object = field.get(record);
+        
+        if (object == null) {
+            return true;
+        } else {
+            if (object instanceof List) {
+                List list = (List) object;
+                return list.isEmpty();
+            } else {
+                return false;
             }
         }
     }
@@ -336,7 +423,7 @@ public class ASN1Parser implements ASN1Configuration{
             } else {
                 subline = subLines.get(i);
                 stringSeparators = getSeparators(currentLine);
-                lines.add(stringSeparators.toString() + subLines.get(i));
+                lines.add(stringSeparators.toString() + subline);
             }
         }
     }
@@ -400,7 +487,7 @@ public class ASN1Parser implements ASN1Configuration{
     private void addAttribute(Object record)throws Exception {
         if( record instanceof NullObject ){
             strSeparators = "";
-            buildStringSeparators(record);
+            buildStringSeparators(record, null);
             innerAttributes.add( strSeparators );
         }else{
             innerAttributes.add(CSV_SEPARATOR + record.toString() );            
@@ -419,7 +506,7 @@ public class ASN1Parser implements ASN1Configuration{
         String value = "";
         if (record instanceof NullObject) {
             strSeparators = "";
-            buildStringSeparators(record);
+            buildStringSeparators(record, null);
             value = strSeparators;
         } else {
             value = CSV_SEPARATOR + record.toString();
@@ -441,7 +528,7 @@ public class ASN1Parser implements ASN1Configuration{
      * @throws IntrospectionException   si ocurre algun error al obtener los 
      *                                  atributos de <code>nullObject.getClazz()</code>.
      */
-    private void buildStringSeparators(Object record) 
+    private void buildStringSeparators(Object record, String fieldName) 
             throws IntrospectionException, ClassNotFoundException {
         NullObject nullObject = (NullObject) record;
         List<Field> attributes = UtilReflection.filterFields( nullObject.getClazz() );
@@ -449,20 +536,42 @@ public class ASN1Parser implements ASN1Configuration{
         String className;
         Class clazz;
         
+        if (isMaximumDeepLevel(fieldName)) {
+            return;
+        }
+        
         if( attributes.isEmpty() || UtilReflection.isPrimitive( nullObject.getClazz() ) ){
-            strSeparators +=  CSV_SEPARATOR + "NULL" ;
+            strSeparators += CSV_SEPARATOR + "NULL" ;
         }else{
             for( Field field: attributes ){
                 if( field.getType().getSimpleName().endsWith("List") ){
                     listType = UtilReflection.getTypeList(field);
                     className = listType.getTypeName();
                     clazz = Class.forName(className);
-                    buildStringSeparators( new NullObject(clazz) );
+                    buildStringSeparators( new NullObject(clazz), field.getName()  );
                 }else{
-                    buildStringSeparators( new NullObject( field.getType() ) );
+                    buildStringSeparators( new NullObject( field.getType() ), field.getName() );
                 }
             }
         }
+    }
+    
+    private boolean isMaximumDeepLevel(String key){
+        if (parentKeyExists(key)) {
+            if (lastParentKey == null) {
+                lastParentKey = key;
+                deepLevelCount++;
+            } else if (!lastParentKey.equalsIgnoreCase(key)) {
+                deepLevelCount++;
+            }
+        }
+
+        if (deepLevelCount > DEEP_LEVEL) {
+            lastParentKey = null;
+            deepLevelCount = 0;
+            return true;
+        }
+        return false;
     }
     
     /**
@@ -473,7 +582,7 @@ public class ASN1Parser implements ASN1Configuration{
      *                              propiedades o atributos del OutputRecord.
      */
     private void buildColumnsMap() throws SecurityException {
-        mapColumns = new LinkedHashMap<>();
+        setColumns = new LinkedHashSet<>();
         Arrays.stream( outputRecordClass.getDeclaredFields() ).forEach(choice -> {
             if ( !Modifier.isFinal(choice.getModifiers()) && UtilReflection.omitFields( choice ) ) {
                 try {
@@ -488,6 +597,15 @@ public class ASN1Parser implements ASN1Configuration{
         });
     }
    
+    private boolean parentKeyExists(String key){
+        String[] arrayKeys = recordType.split("\\.");
+        long cont = 0;
+        if( arrayKeys.length > 0 ){
+            cont = Arrays.asList(arrayKeys).stream().filter( innerKey -> innerKey.equalsIgnoreCase(key) ).count();
+        }
+        return cont >= 2 ;
+    }
+    
     /**
      * Obtiene cada nombre attributo del objeto choice y los agrega al 
      * mapa de columnas junto con su recordType.
@@ -502,11 +620,145 @@ public class ASN1Parser implements ASN1Configuration{
     private void buildColumnsMapAttributtes(Object record, 
             String rType, String fieldName, String childName) throws Exception {
         List<Field> attributes = filtrar( Arrays.asList( record.getClass().getDeclaredFields() ) );
-        recordType = rType != null ? rType + "." + fieldName : recordType;       
+        
+//        recordType = rType != null ? rType + "." + fieldName : recordType;  
+        
+        if( rType != null ){
+            recordType = rType + "." + fieldName;
+            if( parentKeyExists(fieldName) ){
+                if( lastParentKey == null){
+                    lastParentKey = fieldName;
+                    deepLevelCount++;
+                }else if( !lastParentKey.equalsIgnoreCase(fieldName) ){
+                    deepLevelCount++;
+                }
+            }
+            
+            if( deepLevelCount > DEEP_LEVEL ){
+                lastParentKey = null;
+                deepLevelCount = 0;
+                return;
+            }
+            
+            
+        }
         
         if( attributes.isEmpty() ){
-            mapColumns.put( (recordType + "." + childName).toLowerCase(), new ArrayList<>() );
+//            mapColumns.put( (recordType + "." + childName).toLowerCase(), new ArrayList<>() );
+//            setColumns.add((recordType + "." + childName).toLowerCase());
+            if(childName == null){
+                childName = record.getClass().getSimpleName().toLowerCase();
+            }
+
+            addColumn(childName.toLowerCase());
         }
+        attributes.stream().forEach(field -> {
+            try {
+                addElementToMap(field);                                
+            } catch (Exception ex) {
+                ex.printStackTrace();
+            }
+        });
+    }
+    
+    /**
+     * Construye nombre de columna y lo agrega al mapa
+     * @param field atributo
+     * @see #putMapField(java.lang.reflect.Field) 
+     * @see UtilReflection#getDeclaredFields(java.lang.reflect.Field) 
+     * @see #buildTypeListMap(java.lang.reflect.Field, java.lang.String) 
+     * @see #buildColumnsMapAttributtes(java.lang.Object, java.lang.String, java.lang.String, java.lang.String) 
+     * @throws Exception    si ocurre un error en la construcción
+     */
+    private void addElementToMap(Field field) throws Exception {
+        long attLength = UtilReflection.getTotalAttributes(field);
+        String fieldName = field.getName();
+
+        if (("code").equals(fieldName)) {
+            return;
+        }
+
+        if (attLength > 0) {
+            if (attLength == 1) {
+                addColumn(field.getName());
+            } else {
+                List<Field> innerAtt = filtrar(UtilReflection.getDeclaredFields(field));
+
+                for (Field att : innerAtt) {
+                    if (("value").equals(att.getName())) {
+                        addColumn(field.getName());
+                    } else {
+                        if (att.getType().getName().endsWith(".List")) {
+                            
+                            if(field.getName().equalsIgnoreCase("communitydatainfo")){
+                                System.out.println("");
+                            }
+                            
+                            buildTypeListMap(att, field.getName());
+                        } else {
+                            if (UtilReflection.isPrimitive(att)) {
+//                                String key = recordType + "." + field.getName() + "." + att.getName();
+//                                mapColumns.put(key.toLowerCase(), new ArrayList<>())
+                                String key = field.getName() + "." + att.getName();
+                                addColumn(key); 
+                            } else {
+                                Class c = Class.forName(att.getType().getName());
+                                Object instance = c.newInstance();
+                                buildColumnsMapAttributtes(instance, recordType, field.getName(), att.getName());
+                                removeLastParentKey();
+//                                int lastIndexParent = recordType.lastIndexOf(".");
+//                                recordType = recordType.substring(0, lastIndexParent);
+                            }
+                        }
+                    }
+                }
+            }
+        } else {
+            if (field.getType().getName().endsWith(".List")) {
+                String auxName = field.getName().equals("seqOf") ? field.getDeclaringClass().getSimpleName() : field.getName();
+                buildTypeListMap(field, auxName);
+            } else {
+                addColumn(field.getName());
+            }
+        }
+    }
+    
+    private void removeLastParentKey(){
+        int lastIndexParent = recordType.lastIndexOf(".");
+        if( lastIndexParent >= 0 ){
+            recordType = recordType.substring(0, lastIndexParent);
+        }
+    }
+    
+    /**
+     * Agrega columna a mapa <code>mapColumns</code>
+     * @param field nombre de columna
+     */
+    private void addColumn(String childKey){
+//        String key = recordType + "." + field.getName();
+//        mapColumns.put( key.toLowerCase(), new ArrayList<>() );
+        String key = recordType + "." + childKey;
+        setColumns.add(key.toLowerCase());
+//        System.out.println(key.toLowerCase());
+    }
+
+    /**
+     * Obtiene el tipo de elementos que guarda una lista, crea una instancia 
+     * y continua la contruccion del nombre de la columna
+     * @param att   atributo Lista
+     * @param name  nombre de atributo
+     * @throws Exception    si ocurre un error en la construcción
+     */
+    private void buildTypeListMap(Field att, String name) throws Exception {
+        Type listType = UtilReflection.getTypeList(att);
+        String className = listType.getTypeName();
+        Class c = Class.forName(className);
+        Object instance = c.newInstance();
+        
+        buildColumnsMapAttributtes(instance, recordType, name, null);
+        removeLastParentKey();
+//        int lastIndexParent = recordType.lastIndexOf(".");
+//        recordType = recordType.substring(0,lastIndexParent);
     }
 
     /**
@@ -550,5 +802,13 @@ public class ASN1Parser implements ASN1Configuration{
 
     public void setPackageName(String packageName) {
         this.packageName = packageName;
+    }
+
+    public List<Exception> getExceptionList() {
+        return exceptionList;
+    }
+
+    public void setExceptionList(List<Exception> exceptionList) {
+        this.exceptionList = exceptionList;
     }
 }

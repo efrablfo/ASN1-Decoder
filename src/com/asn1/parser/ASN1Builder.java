@@ -1,5 +1,6 @@
 package com.asn1.parser;
 
+import com.asn1.exception.DecoderException;
 import static com.asn1.parser.ASN1Configuration.LOGGER_NAME;
 import com.asn1.util.Util;
 import java.io.File;
@@ -44,10 +45,20 @@ public class ASN1Builder implements ASN1Configuration{
                 createCdrOutputFolder(cdrPath.toString());
                 parser.setCdrOutputFolder(cdrOutputFolder);
                 parser.run(cdrPath.toString());
-                moveFile(cdrPath, false);
+                
+                if( !parser.getExceptionList().isEmpty() ){
+//                    throw new DecoderException("Ocurrió un error al decodificar el archivo");
+                }                
+//                moveFile(cdrPath, false);
                 writeLog("Archivo " + cdrPath.toString() + " decodificado con éxito", Level.INFO);
+            } catch (DecoderException ex) {
+//                moveFile(cdrPath, true);
+                writeLog("Error: " + ex.getMessage(), Level.SEVERE);
+                parser.getExceptionList().
+                        forEach(e -> writeLog("Error: " + e.getMessage() 
+                                + " Causa: \n" + Util.getStackTrace(ex), Level.SEVERE));
             } catch (Exception ex) {
-                moveFile(cdrPath, true);
+//                moveFile(cdrPath, true);
                 writeLog("Error: " + ex.getMessage() + " Causa: \n" + Util.getStackTrace(ex), Level.SEVERE);
             }
         });

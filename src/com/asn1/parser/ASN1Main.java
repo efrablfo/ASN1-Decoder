@@ -9,13 +9,13 @@ package com.asn1.parser;
  */
 public class ASN1Main {
     public static void main(String[] args) {
-        if( args.length == 0 ){
-            System.err.println("No se han especificado los argumentos");
-            return;
-        }
-        String outputRecord = args[0];
-        String asnDir = args[1];
-        String packageName = args[2];
+//        if( args.length == 0 ){
+//            System.err.println("No se han especificado los argumentos");
+//            return;
+//        }
+        String outputRecord = "ChargingDataOutputRecord"/*args[0]*/;
+        String asnDir = "C:\\ASN1_CDRS\\ccn3"/*args[1]*/;
+        String packageName = "chargingcdr"/*args[2]*/;
 
         try {
             ASN1Parser parser = new ASN1Parser();
