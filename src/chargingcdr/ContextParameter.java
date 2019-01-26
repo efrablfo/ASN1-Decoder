@@ -27,7 +27,7 @@ public class ContextParameter implements Serializable {
 
 	public byte[] code = null;
 	private Integer64 parameterID = null;
-	private ContextParameterValueType parameterValue = null;
+	private ContextParameterValueType parameterValue = null;       
 	
 	public ContextParameter() {
 	}

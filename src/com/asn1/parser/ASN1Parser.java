@@ -5,6 +5,7 @@ import java.beans.IntrospectionException;
 import java.beans.PropertyDescriptor;
 import java.io.ByteArrayInputStream;
 import java.io.File;
+import java.io.FileWriter;
 import java.io.IOException;
 import java.io.InputStream;
 import java.lang.reflect.Field;
@@ -16,14 +17,14 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.LinkedList;
 import java.util.List;
-import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.TreeSet;
+import java.util.logging.Level;
+import java.util.logging.Logger;
 import java.util.stream.Collectors;
 
 /**
@@ -37,10 +38,9 @@ public class ASN1Parser implements ASN1Configuration{
 
 //    private Map<String, List<String>> mapColumns;     
     private Set<String> setColumns;  
-    private String recordType = null;
+    private String recordName = null;    
     private Path filePath;
-    private String header;
-    private List<String> lines;
+    private String header;    
     private List<String> innerAttributes;
     private List<String> subLines;
     private String strSeparators;
@@ -71,7 +71,7 @@ public class ASN1Parser implements ASN1Configuration{
             e.printStackTrace();
             System.exit(0);
         }
-        buildChoices();
+//        buildChoices();
     }
     
     /**
@@ -196,6 +196,14 @@ public class ASN1Parser implements ASN1Configuration{
         Files.write(filePath, header.getBytes());
     }
     
+    
+    private void buildHeader(Object record){
+    
+    
+    }
+    
+    
+    
     /**
      * Concatena columna al header junto con su separador
      * @param columnName   nombre de columna
@@ -220,24 +228,18 @@ public class ASN1Parser implements ASN1Configuration{
         lastParentKey = "";
         deepLevelCount = 0;
         buildHeader(choice);
+        List<StringBuilder> cdr;
         for (Object record : genericList) {
-            if (record.getClass().getSimpleName().toLowerCase().equals(choice.toLowerCase())) {
-                initLines();
-                recordType = choice.toLowerCase(); 
-                buildRecord(record, false, null, null);
-                writeRecord();
+//            if (record.getClass().getSimpleName().toLowerCase().equals(choice.toLowerCase())) {       
+              if (record.getClass().getSimpleName().toLowerCase().equalsIgnoreCase("OnlineCreditControlRecord")) {      
+                recordName = choice.toLowerCase(); 
+                //recordType = record.getClass().getSimpleName().toLowerCase();
+                
+                //cdr = buildRecord(record, false, recordType);
+                cdr = buildRecordChoice(record);
+                writeRecord(cdr);
             }
         }
-    }
-
-    /**
-     * Inicializa la lista que tendrá la información de un objeto(Record). 
-     * Esta lista puede ser de 1 o mas elementos dependiendo 
-     * de los atributos de tipo SEQUENCE del objeto. 
-     */
-    private void initLines() {
-        lines = new ArrayList<>();
-        lines.add("");
     }
     
     /**
@@ -248,73 +250,271 @@ public class ASN1Parser implements ASN1Configuration{
      * @see ASN1Configuration#ESCAPE_SEPARATOR
      * @throws IOException  si ocurre un error en la escritura del archivo
      */
-    private void writeRecord() throws IOException{
+    private void writeRecord(List<StringBuilder> cdr) throws IOException{
         int totalSeparators = header.split(ESCAPE_SEPARATOR).length;
         int lineSeparators;
         String value;
         String separators;
         String line;
         
-        for( int i = 0; i < lines.size(); i++  ){
-            line = lines.get(i).substring(1);
+        for( int i = 0; i < cdr.size(); i++  ){
+            line = cdr.get(i).substring(1);
             lineSeparators = line.split(ESCAPE_SEPARATOR).length;
             separators = getStrEmptyChilds( totalSeparators - lineSeparators );
             value = line + separators;
-            lines.set(i, value);
+            cdr.set(i, new StringBuilder(value));
         }
-        List<String> fileLines = Files.readAllLines(filePath);
-        fileLines.addAll(lines);
-        Files.write(filePath, fileLines);
+        
+        FileWriter output = new FileWriter(filePath.toString(), true);
+        cdr.forEach(cdrLine -> {
+            try {
+                output.write(cdrLine.toString());
+            } catch (IOException ex) {
+                Logger.getLogger(ASN1Parser.class.getName()).log(Level.SEVERE, null, ex);
+            }
+        });
+        output.close();
     }
     
-    private void updateRecordType(String key){
-        recordType += "." + key.toLowerCase();
-        System.out.println( recordType );
+    private void updateRecordType(String key, String type){
+        recordName += "." + key.toLowerCase();
+        //recordType += "." + type.toLowerCase();
+//        System.out.println( recordName );
+        //System.out.println( recordType );
+    }
+
+    private List<StringBuilder> buildRecordChoice(Object record) throws Exception{
+        Object object;
+        List<Field> filterProperties = UtilReflection.filterFields(record);
+        X x = new X();
+                
+        for (Field fieldChoice : filterProperties){
+            
+            fieldChoice.setAccessible(true);
+            
+            object = isNullObject(fieldChoice, record) ? new NullObject(fieldChoice.getType()) : fieldChoice.get(record);
+            
+            x.add(getInformationField(object, fieldChoice.getType().getSimpleName()));            
+        }
+        
+        
+        return x.listResultProperties;
     }
     
-    /**
-     * Lee objeto record con la información decodificada y guarda en la 
-     * lista <code>lines</code> cada una de sus propiedades.
-     * @see #addAttribute(java.lang.Object) 
-     * @see #putLine(java.lang.Object) 
-     * @see UtilReflection#filterFields(java.lang.Object) 
-     * @see #putListLines() 
-     * @param record    objeto que contiene información decodificada.
-     * @param isListElement indica si <code>record</code> es una Lista.
-     * @throws Exception    si ocurrió un error en la construcción del record.
-     */
-    private void buildRecord(Object record, boolean isListElement, String parentKey, String childKey)throws Exception {
+    public class X {         
+        List<StringBuilder> listResultProperties = new ArrayList();
+        
+ 
+        
+        public X add(StringBuilder result) {
+            if(this.listResultProperties.isEmpty()){
+                this.listResultProperties.add(new StringBuilder());
+            }
+            this.listResultProperties.get(0).append(CSV_SEPARATOR+result);
+            return this;
+        }
+        
+        private void appendTwoList(List<StringBuilder> result) {
+            
+            if(this.listResultProperties.size()< result.size()){
+                int diffferenceList = result.size()-this.listResultProperties.size();
+                for (int i = 0;i<diffferenceList;i++){
+                    this.listResultProperties.add(new StringBuilder());
+                }
+            }
+            
+            for (int i = 1; i < this.listResultProperties.size(); i++) {
+                if (rowHasData(i, result)) {
+                    this.listResultProperties.get(i).append(result.get(i));
+                }
+            }
+            
+        }
+        
+        private X matchList(List<StringBuilder> result) {
+            
+            if(!this.listResultProperties.isEmpty()){
+                
+                this.listResultProperties.get(0).append(result.get(0));
+                appendTwoList(result);
+                
+            }else{
+                this.listResultProperties = result;
+            }
+            
+            
+            return this;
+        }
+        
+         public X add(List<X> result) {            
+            for (X x : result) 
+                add(x);            
+                        
+            return this;
+        }
+        
+        public X add(X x) {                        
+            matchList(x.listResultProperties);            
+            return this;
+        }
+    }
+    
+    public String buildChoiceHeader(Object record, String columnName, String path) throws Exception{
+        String resultado ="";
+        
+        Class clazz = record instanceof NullObject ? ((NullObject)record).getClazz(): record.getClass();
+        List<Field> filterAttributes = UtilReflection.filterFields(clazz);
+                
+        if( path.toLowerCase().endsWith("currencytype") ){
+            System.out.println("");
+        }
+        
+        System.out.println(path);
+        if (filterAttributes.isEmpty() || isMaximumDeepLevel(clazz.getSimpleName(), path)){
+            if (path.endsWith(".Group")){
+                int az = 1;
+            }
+            resultado = CSV_SEPARATOR + columnName;
+            return resultado;
+        }
+        
+        for(Field att: filterAttributes){
+            att.setAccessible(true);
+            
+            if( att.getName().equals("value") ){
+                resultado = CSV_SEPARATOR + columnName;
+                return resultado;
+            }else if( att.getType().getName().endsWith(".List") ){                
+                
+                Type listType = UtilReflection.getTypeList(att);
+                String className = listType.getTypeName();
+                Class c = Class.forName(className);
+                Object instance = c.newInstance();
+                
+                resultado += buildChoiceHeader(instance, columnName, path /*+ "." +instance.getClass().getSimpleName()*/);
+            
+            }else{
+                Object instance;
+                
+                if( UtilReflection.isPrimitive(att) ){
+                    instance = isNullObject(att, record) ? new NullObject(att.getType()): att.get(record);
+                }else{
+                    instance = att.getType().newInstance();
+                }
+                
+                String auxName = att.getName().equals("seqOf") ? att.getDeclaringClass().getSimpleName() : att.getName();
+                
+                resultado += buildChoiceHeader(instance, columnName+"."+att.getName(), path + "." + auxName);
+            }
+        }
+        
+        return resultado;
+    }
+    
+    private X getInformationField(Object record, String path) throws Exception{
+        X x = new X();        
+        Object innerObj;
+        Object valueAtt;        
+        
+        System.out.println("Path: "+ path);
+                
+        if (record instanceof NullObject){
+           
+            StringBuilder resultado = new StringBuilder(buildStringSeparators(record, path));
+            return x.add(resultado);
+        }
+        
+        if (isMaximumDeepLevel(record.getClass().getSimpleName(),path)){
+            return new X();
+        }
+        
+        
+        List<Field> filterAttributes = UtilReflection.filterFields(record.getClass());
+        
+        if (filterAttributes.isEmpty()){
+            
+            return x.add(new StringBuilder(record.toString()));
+        }
+        
+        for (Field att: filterAttributes){
+            
+            att.setAccessible(true);
+            valueAtt = isNullObject(att, record) ? new NullObject(att.getType()) : att.get(record);
+            if (valueAtt instanceof List){
+                
+                List listAtt = (List) valueAtt;
+                
+                X list = new X();
+                for (Object objListAtt : listAtt) {
+                    
+                    List<Field> filterValueProperties = UtilReflection.filterFields(objListAtt);                    
+                    if (filterValueProperties.isEmpty()) {
+                        
+                         return x.add(new StringBuilder(objListAtt.toString()));
+                        //x.add(getInformationField(valueAtt, path + "." + valueAtt.getClass().getSimpleName()));
+                    } else {      
+                        X recordList = new X();
+                        for (Field attList : filterValueProperties) {
+                            attList.setAccessible(true);
+                            innerObj = isNullObject(attList, objListAtt) ? new NullObject(attList.getType()) : attList.get(objListAtt);
+                            recordList.add(getInformationField(innerObj, path + "." + attList.getType().getSimpleName()));
+
+                        } 
+                        list.listResultProperties.addAll(recordList.listResultProperties);
+                    }                    
+                    
+                }
+                x.add(list);
+                
+            }else{
+                
+                if(att.getName().equalsIgnoreCase("value")){
+                    
+                    return x.add(new StringBuilder(record.toString()));
+                }
+                
+                x.add(getInformationField(valueAtt, path + "." + att.getType().getSimpleName()));
+            }
+        
+        
+        }                                                        
+       
+        return x;
+    }
+    
+    private List<StringBuilder> buildRecord(Object record, boolean isListElement, String path, List<StringBuilder> cdrLines, StringBuilder line)throws Exception {
+        
         Object object;
         String propName;
         Object innerObj;
         
-        updateRecordType(parentKey, childKey);
+        String type = record instanceof NullObject ? 
+                ((NullObject)record).getClazz().getSimpleName() : record.getClass().getSimpleName();
         
-        String auxKey = childKey == null ? parentKey : childKey;
-        if (isMaximumDeepLevel(auxKey)) {
-            return;
+   
+                
+        if (isMaximumDeepLevel(type, path)) {
+           // return cdrLine;
         }
         
         if (record instanceof NullObject) {
             if (isListElement) {
-                addAttribute(record);
-                removeLastParentKey();
+                addAttribute(record);                
             } else {
-//                updateRecordType(innerKey);
-                putLine(record);
-                removeLastParentKey();
+                putLine(record);                
             }
-            return;
+            removeLastParent();
+            //return;
         }
         List<Field> filterProperties = UtilReflection.filterFields(record);
 
         if (filterProperties.isEmpty()) {
             if (isListElement) {
                 addAttribute(record);
-                removeLastParentKey();
+                removeLastParent();
             } else {
                 putLine(record);
-                removeLastParentKey();
+                removeLastParent();
             }
         } else {
             for (Field field : filterProperties) {
@@ -341,12 +541,12 @@ public class ASN1Parser implements ASN1Configuration{
                         
                         if (attributes.isEmpty()) {
                             addAttribute(obj);
-                            removeLastParentKey();
+                            removeLastParent();
                         } else {
                             for (Field innerField : attributes) {
                                 innerField.setAccessible(true);
                                 innerObj = isNullObject(innerField, obj) ? new NullObject(innerField.getType()) : innerField.get(obj);
-                                buildRecord(innerObj, true, null, innerField.getName());
+                                //buildRecord(innerObj, true, null, innerField.getName());
                             }
                         }
                         
@@ -357,27 +557,14 @@ public class ASN1Parser implements ASN1Configuration{
 //                    removeLastParentKey();
                     putListLines();
                 } else {
-                    buildRecord(object, false, propName, null);
+                    //buildRecord(object, false, propName, null);
                 }
             }
-            removeLastParentKey();
+            removeLastParent();
         }
+        return null;
     }
 
-    private void updateRecordType(String parentKey, String childKey) {
-        String innerKey = "";
-        if (parentKey != null || childKey != null) {
-            if (parentKey != null && childKey != null) {
-                innerKey = parentKey + "." + childKey;
-            } else if (parentKey != null && childKey == null) {
-                innerKey = parentKey;
-            } else if (parentKey == null && childKey != null) {
-                innerKey = childKey;
-            }
-            updateRecordType(innerKey);
-        }
-    }
-    
     private boolean isNullObject(Field field, Object record) throws IllegalArgumentException, IllegalAccessException{
         Object object = field.get(record);
         
@@ -403,7 +590,7 @@ public class ASN1Parser implements ASN1Configuration{
      * @see ASN1Configuration#ESCAPE_SEPARATOR
      */
     private void putListLines(){
-        String currentLine = lines.get(0);
+        /*//String currentLine = lines.get(0);
         String stringSeparators = "";
         String subline = subLines.get(0);
         int numSepCurentLine;
@@ -411,7 +598,7 @@ public class ASN1Parser implements ASN1Configuration{
         
         numSepCurentLine = getSeparators(currentLine).split(ESCAPE_SEPARATOR).length - 1;    
         String value = lines.get(0).concat(subline);
-        lines.set(0, value);
+        //lines.set(0, value);
         
         for(int i = 1; i < subLines.size(); i++) {
             stringSeparators = "";
@@ -425,7 +612,7 @@ public class ASN1Parser implements ASN1Configuration{
                 stringSeparators = getSeparators(currentLine);
                 lines.add(stringSeparators.toString() + subline);
             }
-        }
+        }*/
     }
 
     /**
@@ -468,27 +655,28 @@ public class ASN1Parser implements ASN1Configuration{
      */
     private boolean rowHasData(int index) {
         try {
-            lines.get(index);
+          //  lines.get(index);
         } catch (IndexOutOfBoundsException e) {
             return false;
         }
         return true;
     }
-
-    /**
-     * Agrega atributo a lista <code>innerAttributes</code>, esto aplica para 
-     * propiedades del record de tipo SEQUENCE, siendo una secuencia de 
-     * objectos los cuales tienen atributos. 
-     * @param record    propiedad o atributo
-     * @see #buildStringSeparators(java.lang.Object) 
-     * @see ASN1Configuration#CSV_SEPARATOR
-     * @throws Exception    si ocurre un error al agregar el atributo.
-     */
+    
+    private boolean rowHasData(int index, List<StringBuilder> list) {
+        try {
+            list.get(index);
+        } catch (IndexOutOfBoundsException e) {
+            return false;
+        }
+        return true;
+    }
+    
+   
+    
     private void addAttribute(Object record)throws Exception {
         if( record instanceof NullObject ){
-            strSeparators = "";
-            buildStringSeparators(record, null);
-            innerAttributes.add( strSeparators );
+            //String emptyFieldValues = buildStringSeparators(record, recordType);
+           // innerAttributes.add( emptyFieldValues );
         }else{
             innerAttributes.add(CSV_SEPARATOR + record.toString() );            
         }
@@ -502,17 +690,32 @@ public class ASN1Parser implements ASN1Configuration{
      * @see ASN1Configuration#CSV_SEPARATOR
      * @throws Exception    si ocurre un error al agregar la propiedad    
      */
-    public void putLine(Object record) throws Exception {
-        String value = "";
+    public void putLine2(Object record) throws Exception {
+       /* String value = "";
         if (record instanceof NullObject) {
             strSeparators = "";
-            buildStringSeparators(record, null);
+            buildStringSeparators(record, null, null);
             value = strSeparators;
+            removeLastParent();
         } else {
             value = CSV_SEPARATOR + record.toString();
+            removeLastParent();
         }
         value = lines.get(0) + value;
-        lines.set(0, value);
+        lines.set(0, value);*/
+    }
+    
+     public void putLine(Object record) throws Exception {
+       /* String value = "";
+        if (record instanceof NullObject) {            
+            value = buildStringSeparators(record, recordType);
+                        
+        } else {
+            value = CSV_SEPARATOR + record.toString();
+            //removeLastParent();
+        }
+        value = lines.get(0) + value;
+        lines.set(0, value);*/
     }
     
     /**
@@ -528,50 +731,65 @@ public class ASN1Parser implements ASN1Configuration{
      * @throws IntrospectionException   si ocurre algun error al obtener los 
      *                                  atributos de <code>nullObject.getClazz()</code>.
      */
-    private void buildStringSeparators(Object record, String fieldName) 
+   
+    private final String EMPTY_FIELD = CSV_SEPARATOR + "NULL";
+    private String buildStringSeparators(Object record, String path) 
             throws IntrospectionException, ClassNotFoundException {
+          String result = "";
         NullObject nullObject = (NullObject) record;
         List<Field> attributes = UtilReflection.filterFields( nullObject.getClazz() );
         Type listType;
         String className;
         Class clazz;
-        
-        if (isMaximumDeepLevel(fieldName)) {
-            return;
+        String type = nullObject.getClazz().getSimpleName();               
+               
+        if (isMaximumDeepLevel(type, path)  || attributes.isEmpty() || UtilReflection.isPrimitive( nullObject.getClazz() )) {            
+            return EMPTY_FIELD;
         }
-        
-        if( attributes.isEmpty() || UtilReflection.isPrimitive( nullObject.getClazz() ) ){
-            strSeparators += CSV_SEPARATOR + "NULL" ;
-        }else{
-            for( Field field: attributes ){
-                if( field.getType().getSimpleName().endsWith("List") ){
-                    listType = UtilReflection.getTypeList(field);
-                    className = listType.getTypeName();
-                    clazz = Class.forName(className);
-                    buildStringSeparators( new NullObject(clazz), field.getName()  );
-                }else{
-                    buildStringSeparators( new NullObject( field.getType() ), field.getName() );
-                }
-            }
-        }
-    }
-    
-    private boolean isMaximumDeepLevel(String key){
-        if (parentKeyExists(key)) {
-            if (lastParentKey == null) {
-                lastParentKey = key;
-                deepLevelCount++;
-            } else if (!lastParentKey.equalsIgnoreCase(key)) {
-                deepLevelCount++;
-            }
-        }
+                      
+        for( Field field: attributes ){           
 
-        if (deepLevelCount > DEEP_LEVEL) {
-            lastParentKey = null;
-            deepLevelCount = 0;
-            return true;
+            if( field.getType().getSimpleName().endsWith("List") ){
+                listType = UtilReflection.getTypeList(field);
+                className = listType.getTypeName();
+                clazz = Class.forName(className);
+                result += buildStringSeparators( new NullObject(clazz), path);
+            }else{
+                result += buildStringSeparators( new NullObject( field.getType() ), path + "." + field.getType().getSimpleName() );
+            }
+        }       
+        return result;
+    }
+      
+    private boolean isMaximumDeepLevel(String type, String path){
+        String[] arrayTypes = path.split("\\.");
+        long cont = 0;
+        if( arrayTypes.length > 0 ){
+            cont = Arrays.asList(arrayTypes).stream().filter( innerType -> innerType.equalsIgnoreCase(type) ).count();
         }
-        return false;
+        if (cont > DEEP_LEVEL ) {
+            System.out.println("ROMPEEE " + type + " PATH " + path);
+        }
+        return cont > DEEP_LEVEL ;
+    }
+     
+    private boolean isMaximumDeepLevel2(String type){
+        return parentTypeExists(type);
+//        if (parentTypeExists(type)) {
+//            if (lastParentKey == null) {
+//                lastParentKey = type;
+//                deepLevelCount++;
+//            } else if (!lastParentKey.equalsIgnoreCase(type)) {
+//                deepLevelCount++;
+//            }
+//        }
+//
+//        if (deepLevelCount > DEEP_LEVEL) {
+//            lastParentKey = null;
+//            deepLevelCount = 0;
+//            return true;
+//        }
+//        return false;
     }
     
     /**
@@ -585,25 +803,43 @@ public class ASN1Parser implements ASN1Configuration{
         setColumns = new LinkedHashSet<>();
         Arrays.stream( outputRecordClass.getDeclaredFields() ).forEach(choice -> {
             if ( !Modifier.isFinal(choice.getModifiers()) && UtilReflection.omitFields( choice ) ) {
-                try {
-                    Class recordClass = Class.forName( choice.getType().getName() );
-                    Object instance = recordClass.newInstance();
-                    recordType = instance.getClass().getSimpleName();
-                    buildColumnsMapAttributtes(instance, null, null, null);
-                } catch (Exception ex) {
-                    ex.printStackTrace();
+                
+                if( choice.getType().getSimpleName().equals("OnlineCreditControlRecord") ){
+                    try {
+                        Class recordClass = Class.forName( choice.getType().getName() );
+                        Object instance = recordClass.newInstance();
+                        recordName = instance.getClass().getSimpleName();
+                        //recordType = "";
+                        header += buildChoiceHeader(instance, recordName, recordName);
+
+                    } catch (Exception ex) {
+                        ex.printStackTrace();
+                    }
                 }
             }
         });
+        System.out.println(header);
     }
+    
+
    
-    private boolean parentKeyExists(String key){
-        String[] arrayKeys = recordType.split("\\.");
+    private boolean parentNameExists(String key){
+        String[] arrayKeys = recordName.split("\\.");
         long cont = 0;
         if( arrayKeys.length > 0 ){
             cont = Arrays.asList(arrayKeys).stream().filter( innerKey -> innerKey.equalsIgnoreCase(key) ).count();
         }
         return cont >= 2 ;
+    }
+    
+    private boolean parentTypeExists(String type){
+        return false;
+        /*String[] arrayTypes = recordType.split("\\.");
+        long cont = 0;
+        if( arrayTypes.length > 0 ){
+            cont = Arrays.asList(arrayTypes).stream().filter( innerType -> innerType.equalsIgnoreCase(type) ).count();
+        }
+        return cont > DEEP_LEVEL ;*/
     }
     
     /**
@@ -624,8 +860,8 @@ public class ASN1Parser implements ASN1Configuration{
 //        recordType = rType != null ? rType + "." + fieldName : recordType;  
         
         if( rType != null ){
-            recordType = rType + "." + fieldName;
-            if( parentKeyExists(fieldName) ){
+            recordName = rType + "." + fieldName;
+            if( parentNameExists(fieldName) ){
                 if( lastParentKey == null){
                     lastParentKey = fieldName;
                     deepLevelCount++;
@@ -704,8 +940,8 @@ public class ASN1Parser implements ASN1Configuration{
                             } else {
                                 Class c = Class.forName(att.getType().getName());
                                 Object instance = c.newInstance();
-                                buildColumnsMapAttributtes(instance, recordType, field.getName(), att.getName());
-                                removeLastParentKey();
+                                buildColumnsMapAttributtes(instance, recordName, field.getName(), att.getName());
+                                removeLastParent();
 //                                int lastIndexParent = recordType.lastIndexOf(".");
 //                                recordType = recordType.substring(0, lastIndexParent);
                             }
@@ -723,11 +959,15 @@ public class ASN1Parser implements ASN1Configuration{
         }
     }
     
-    private void removeLastParentKey(){
-        int lastIndexParent = recordType.lastIndexOf(".");
-        if( lastIndexParent >= 0 ){
-            recordType = recordType.substring(0, lastIndexParent);
+    private void removeLastParent(){
+        /*int lastIndexParentName = recordName.lastIndexOf(".");
+        int lastIndexParentType = recordType.lastIndexOf(".");
+        if( lastIndexParentName >= 0 ){
+            recordName = recordName.substring(0, lastIndexParentName);
         }
+        if( lastIndexParentType >= 0 ){
+             recordType = recordType.substring(0, lastIndexParentType);
+        }*/
     }
     
     /**
@@ -737,7 +977,7 @@ public class ASN1Parser implements ASN1Configuration{
     private void addColumn(String childKey){
 //        String key = recordType + "." + field.getName();
 //        mapColumns.put( key.toLowerCase(), new ArrayList<>() );
-        String key = recordType + "." + childKey;
+        String key = recordName + "." + childKey;
         setColumns.add(key.toLowerCase());
 //        System.out.println(key.toLowerCase());
     }
@@ -755,8 +995,8 @@ public class ASN1Parser implements ASN1Configuration{
         Class c = Class.forName(className);
         Object instance = c.newInstance();
         
-        buildColumnsMapAttributtes(instance, recordType, name, null);
-        removeLastParentKey();
+        buildColumnsMapAttributtes(instance, recordName, name, null);
+        removeLastParent();
 //        int lastIndexParent = recordType.lastIndexOf(".");
 //        recordType = recordType.substring(0,lastIndexParent);
     }
